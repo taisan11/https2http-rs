@@ -1,0 +1,13 @@
+[package]
+name = "https2http-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = "4.11.0"
+env_logger = "0.11.8"
+futures-util = "0.3.31"
+log = "0.4.27"
+nojson = "0.1.2"
+reqwest = "0.12.20"
+tokio = { version = "1.45.1", features = ["io-std", "macros", "rt-multi-thread", "time"] }
