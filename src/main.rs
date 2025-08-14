@@ -5,8 +5,9 @@ use log::{error, info};
 use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use nojson::Json;
-use nojson::{DisplayJson, FromRawJsonValue, JsonFormatter, JsonParseError, RawJsonValue};
+use nojson::{DisplayJson, JsonFormatter, JsonParseError, RawJsonValue};
 use std::fs;
+use std::str::FromStr;
 
 #[derive(Clone)]
 struct Config {
@@ -59,29 +60,34 @@ impl DisplayJson for AuthConfig {
     }
 }
 
-impl<'text> FromRawJsonValue<'text> for Config {
-    fn from_raw_json_value(value: RawJsonValue<'text, '_>) -> Result<Self, JsonParseError> {
-        let ([bind_address, bind_port, log_level], [auth]) = value.to_fixed_object(
-            ["bind_address", "bind_port", "log_level"], 
-            ["auth"]
-        )?;
+impl<'text, 'raw> TryFrom<RawJsonValue<'text, 'raw>> for Config {
+    type Error = JsonParseError;
+    fn try_from(value: RawJsonValue<'text, 'raw>) -> Result<Self, Self::Error> {
+        let bind_address = value.to_member("bind_address")?.required()?.try_into()?;
+        let bind_port = value.to_member("bind_port")?.required()?.try_into()?;
+        let log_level = value.to_member("log_level")?.required()?.try_into()?;
+        let auth = match value.to_member("auth") {
+            Ok(member) => Some(member.required()?.try_into()?),
+            Err(_) => None,
+        };
         Ok(Config {
-            bind_address: bind_address.try_to()?,
-            bind_port: bind_port.try_to()?,
-            log_level: log_level.try_to()?,
-            auth: auth.map(|a| a.try_to()).transpose()?,
+            bind_address,
+            bind_port,
+            log_level,
+            auth,
         })
     }
 }
 
-impl<'text> FromRawJsonValue<'text> for AuthConfig {
-    fn from_raw_json_value(value: RawJsonValue<'text, '_>) -> Result<Self, JsonParseError> {
-        let ([], [header_auth]) = value.to_fixed_object(
-            [], 
-            ["header_auth"]
-        )?;
+impl<'text, 'raw> TryFrom<RawJsonValue<'text, 'raw>> for AuthConfig {
+    type Error = JsonParseError;
+    fn try_from(value: RawJsonValue<'text, 'raw>) -> Result<Self, Self::Error> {
+        let header_auth = match value.to_member("header_auth") {
+            Ok(member) => Some(member.required()?.try_into()?),
+            Err(_) => None,
+        };
         Ok(AuthConfig {
-            header_auth: header_auth.map(|h| h.try_to()).transpose()?,
+            header_auth,
         })
     }
 }
@@ -135,7 +141,7 @@ async fn main() -> std::io::Result<()> {
 }
 
 async fn hello() -> Result<HttpResponse> {
-    Ok(HttpResponse::Ok().body("Hello, world!"))
+    Ok(HttpResponse::Ok().body("Hello, Proxy!"))
 }
 
 #[cfg(debug_assertions)]
@@ -213,18 +219,18 @@ async fn proxy_handler(
     match params.get("url") {
         Some(url) => {
             info!("Proxying request to URL: {}", url);
-            let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
-            let reqa = client.request(reqwest_method, url);
-            let reqa = if !body.is_empty() {
-                reqa.body(body.to_vec())
-            } else {
-                reqa
-            };
-            let reqa = if !params.get("header").is_none() {
-                reqa.headers(convert_headers(req.headers()))
-            } else {
-                reqa
-            };
+            let reqwest_method = reqwest::Method::from_str(method.as_str()).unwrap_or(reqwest::Method::GET);
+            let mut reqa = client.request(reqwest_method, url);
+            // bodyの付与
+            if !body.is_empty() {
+                if params.get("body").map(|v| v.as_str()) != Some("0") {
+                    reqa = reqa.body(body.to_vec());
+                }
+            }
+            // headerの付与
+            if params.get("header").map(|v| v.as_str()) != Some("0") {
+                reqa = reqa.headers(convert_headers(req.headers()));
+            }
             let resp = reqa.send().await.map_err(|e| {
                 error!("Failed to send request: {}", e);
                 actix_web::error::ErrorInternalServerError("Failed to send request")
